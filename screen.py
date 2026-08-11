@@ -13,6 +13,9 @@ import json
 import os
 import sys
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 
 import data_source as ds
 
@@ -23,6 +26,10 @@ MIN_AGE_YEARS = 5
 DAYS_PER_YEAR = 365.25
 EXCLUDED_SECTORS = ("financial services",)
 EXCLUDED_INDUSTRY_WORDS = ("bank",)
+
+SCREENER_URL = ("https://query1.finance.yahoo.com/v1/finance/screener"
+                "?crumb={}&lang=en-US&region=US&formatted=true&corsDomain=finance.yahoo.com")
+SCREENER_PAGE_SIZE = 250
 
 
 def _ts_to_date(ts):
@@ -96,6 +103,69 @@ def save_eligible(entries, path=ELIGIBLE_FILE):
 
 
 # --- Fetching (network, via data_source) ------------------------------------
+
+def _screener_query(operands, cache_key, use_cache=True):
+    """All IDX equity quotes matching operands, paged from Yahoo's screener.
+
+    Uses the same cookie+crumb handshake as the fundamentals fetch. Raises
+    DataSourceError on failure.
+    """
+    if use_cache:
+        cached = ds._cache_get(cache_key)
+        if cached is not None:
+            return cached
+    opener = ds._authenticated_opener()
+    crumb = ds._get_crumb(opener)
+    quotes = []
+    offset = 0
+    while True:
+        body = json.dumps({
+            "size": SCREENER_PAGE_SIZE,
+            "offset": offset,
+            "sortField": "ticker",
+            "sortType": "ASC",
+            "quoteType": "equity",
+            "query": {"operator": "and", "operands": operands},
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            SCREENER_URL.format(urllib.parse.quote(crumb)), data=body,
+            headers=dict(ds.HEADERS, **{"Content-Type": "application/json"}))
+        try:
+            with opener.open(req, timeout=ds.TIMEOUT) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            raise ds.DataSourceError("screener HTTP {} for {}".format(exc.code, cache_key)) from exc
+        except urllib.error.URLError as exc:
+            raise ds.DataSourceError("screener network error: {}".format(exc.reason)) from exc
+        result = payload.get("finance", {}).get("result")
+        if not result:
+            break
+        page = result[0].get("quotes") or []
+        quotes.extend(page)
+        offset += len(page)
+        if offset >= (result[0].get("total") or 0) or not page:
+            break
+        time.sleep(0.3)
+    if use_cache:
+        ds._cache_set(cache_key, quotes)
+    return quotes
+
+
+def fetch_universe(use_cache=True):
+    """All IDX equity quotes (exchange=JKT): symbol, name, first trade date."""
+    return _screener_query(
+        [{"operator": "eq", "operands": ["exchange", "JKT"]}],
+        "screener_universe_JKT", use_cache)
+
+
+def fetch_financial_symbols(use_cache=True):
+    """Symbols (e.g. 'BBRI.JK') of IDX equities in the Financial Services sector."""
+    quotes = _screener_query(
+        [{"operator": "eq", "operands": ["exchange", "JKT"]},
+         {"operator": "eq", "operands": ["sector", "Financial Services"]}],
+        "screener_financial_JKT", use_cache)
+    return {quote.get("symbol") for quote in quotes}
+
 
 def fetch_eligibility(ticker, use_cache=True):
     """(sector, industry, first_trade_ts) for an IDX ticker via Yahoo.
