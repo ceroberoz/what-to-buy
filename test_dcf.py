@@ -291,5 +291,56 @@ class TestEligibilityCheck(unittest.TestCase):
         self.assertIn("skipped: BBRI", buffer.getvalue())
 
 
+class TestUniverseMerge(unittest.TestCase):
+    T0 = 1_000_000_000  # 2001-09-09
+    NOW = T0 + int(10 * 365.25 * 86400)
+
+    def _quote(self, symbol, ts=None):
+        quote = {"symbol": symbol}
+        if ts is not None:
+            quote["firstTradeDateMilliseconds"] = int(ts * 1000)
+        return quote
+
+    def test_eligible_added(self):
+        merged, added = screen.merge_universe(
+            {}, [self._quote("AADI.JK", self.T0)], set(), self.NOW)
+        self.assertEqual(added, ["AADI"])
+        self.assertEqual(merged["AADI"]["status"], "eligible")
+        self.assertEqual(merged["AADI"]["listed"], "2001-09-09")
+
+    def test_bank_excluded(self):
+        merged, added = screen.merge_universe(
+            {}, [self._quote("BBRI.JK", self.T0)], {"BBRI.JK"}, self.NOW)
+        self.assertEqual(added, ["BBRI"])
+        self.assertEqual(merged["BBRI"]["status"], "excluded")
+        self.assertIn("Financial Services", merged["BBRI"]["reason"])
+
+    def test_young_excluded(self):
+        young_ts = self.NOW - int(2 * 365.25 * 86400)
+        merged, _ = screen.merge_universe(
+            {}, [self._quote("AADI.JK", young_ts)], set(), self.NOW)
+        self.assertEqual(merged["AADI"]["status"], "excluded")
+        self.assertIn("needs > 5", merged["AADI"]["reason"])
+
+    def test_missing_first_trade_is_no_data(self):
+        merged, _ = screen.merge_universe({}, [self._quote("XXXX.JK")], set(), self.NOW)
+        self.assertEqual(merged["XXXX"]["status"], "no_data")
+
+    def test_existing_entry_preserved(self):
+        existing = {"SIDO": {"status": "eligible", "reason": "",
+                             "sector": "Consumer Defensive", "industry": "Packaged Foods",
+                             "listed": "2013-12-18", "age_years": 12.6}}
+        quotes = [self._quote("SIDO.JK", self.T0), self._quote("TPIA.JK", self.T0)]
+        merged, added = screen.merge_universe(existing, quotes, set(), self.NOW)
+        self.assertEqual(merged["SIDO"], existing["SIDO"])
+        self.assertEqual(added, ["TPIA"])
+        self.assertEqual(merged["TPIA"]["status"], "eligible")
+
+    def test_empty_universe(self):
+        merged, added = screen.merge_universe({"SIDO": {"status": "eligible"}}, [], set(), self.NOW)
+        self.assertEqual(merged, {"SIDO": {"status": "eligible"}})
+        self.assertEqual(added, [])
+
+
 if __name__ == "__main__":
     unittest.main()

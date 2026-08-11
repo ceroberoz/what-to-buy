@@ -1,7 +1,88 @@
 # PLAN.md — Phase 2: IDX Eligibility Whitelist ("stock ticker check")
 
-> Phase 1 (the DCF valuator) is COMPLETE. This plan covers the new eligibility-whitelist
-> feature only.
+> Phase 1 (the DCF valuator) and Phase 2 (per-ticker whitelist) are COMPLETE.
+> This file now tracks **Phase 3: add all eligible IDX tickers to the existing whitelist**.
+
+---
+
+## 1. Problem Statement
+
+**User problem**: The existing whitelist (`data/eligible_tickers.json`) only lists tickers the
+user explicitly screened (SIDO, TPIA, MAPI). They want it to contain **all** eligible IDX
+tickers so any ticker check in `dcf.py` is a fast local lookup.
+
+**Target goal**: A one-shot `uv run screen.py --all` fetches the full IDX equity universe,
+computes the eligible set (listed > 5 years, not Financial Services), and **merges** those
+tickers into the existing `data/eligible_tickers.json` — adding missing eligible tickers while
+keeping the current entries and their sector/industry detail intact.
+
+**Definition of success**:
+- After `uv run screen.py --all`, `data/eligible_tickers.json` contains the whole eligible
+  universe (~515 of 839 IDX equities), existing entries (e.g. SIDO/TPIA/MAPI) unchanged.
+- `uv run dcf.py BBRI` still skips instantly; any other eligible ticker passes the check.
+- No per-ticker network calls (2 bulk screener queries + paging).
+
+**Verified feasibility (live)**: Yahoo screener `exchange=JKT` returns all 839 equities with
+`firstTradeDateMilliseconds`; adding `sector = Financial Services` returns 99 financial tickers
+(includes BBRI). Local rule → **515 eligible**.
+
+---
+
+## 2. Functional Scope
+
+### Included
+- `screen.py --all` flag that:
+  1. Fetches the full IDX universe (`exchange=JKT`, paged, cached) — ticker + listing date.
+  2. Fetches the Financial Services subset (same screener + sector operand).
+  3. Loads the existing whitelist, computes eligible = {age > 5y} − {financial}, and **merges**:
+     new eligible tickers are added to `tickers`/`meta`; existing entries are preserved
+     (never downgraded/removed); financial + too-young tickers recorded in `meta` with a reason.
+  4. Saves back to the same `data/eligible_tickers.json`.
+- A small pure helper for the merge (offline-testable).
+- Screener payloads cached under `data/cache/` (`--no-cache` bypasses).
+
+### Excluded (out of scope)
+- A separate universe mode, rebuild-from-scratch, or new CLI beyond the `--all` flag.
+- Fetching `summaryProfile` sector for the ~515 eligible tickers (sector is only needed to
+  exclude; screener-provided eligible entries store sector/industry as `""`).
+- Auto-refresh scheduling; changing the age rule, the financial exclusion, or `dcf.py`.
+
+---
+
+## 3. Technical Strategy
+
+- Reuse `data_source._authenticated_opener()` / `_get_crumb()` and the JSON-cache helpers for the
+  paged screener POST (same crumb handshake that already works for fundamentals).
+- Page loop (`size=250`) with a short sleep between pages; `quoteType=equity`.
+- Merge = union on the existing whitelist: load doc, add missing entries from the universe,
+  keep everything already present, write back via the existing `save_eligible`.
+- Zero new dependencies (stdlib only).
+
+---
+
+## 4. Step-by-Step Task Checklist
+
+- [x] **P1 — screener fetchers**: `fetch_universe()` and `fetch_financial_symbols()` (paged,
+      cached) in `screen.py`; commit `P1`.
+- [x] **P2 — merge + `--all` wiring**: pure `merge_universe(entries, all_quotes,
+      financial_symbols, now_ts)` (adds missing eligible/excluded entries, preserves existing);
+      `--all` flag in the CLI that fetches → merges → saves; per-ticker mode untouched; commit `P2`.
+- [x] **P3 — tests + final gate**: unit tests for `merge_universe` (bank excluded, young excluded,
+      old non-bank added, existing entry preserved); `py_compile`; `unittest`; a live
+      `screen.py --all` run verifying the whitelist grows to ~515 eligible and BBRI/BMRI/BCA are
+      excluded; commit `P3`.
+
+---
+
+## 5. Risk & Edge Cases
+
+| Risk | Mitigation |
+|------|-----------|
+| Screener pagination flakiness / rate limiting | Single authenticated session per query; page loop with delay; cache payloads; `--no-cache` retries |
+| Ticker missing from the Financial Services filter (sector unset in screener) | Sanity-check known banks (BBRI/BMRI/BCA) in the live gate; document the limitation |
+| Existing whitelist accidentally overwritten | Merge preserves all present entries; only missing ones are added |
+| Non-common equities (REITs, warrants) in `exchange=JKT` | `quoteType=equity` filter; age/sector rules still apply |
+| Eligible entries lack sector/industry detail | Accepted: only used in skip messages; per-ticker `screen.py` runs can re-add detail |
 
 ---
 
