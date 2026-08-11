@@ -7,6 +7,7 @@ Uses only the Python standard library:
 
 import json
 import os
+import statistics
 import time
 import urllib.error
 import urllib.request
@@ -115,3 +116,47 @@ def fetch_monthly_closes(ticker, use_cache=True, ttl=DEFAULT_TTL, suffix=True):
     if len(pairs) < 2:
         raise DataSourceError("insufficient price history for {}".format(ticker))
     return pairs
+
+
+# --- Beta estimation --------------------------------------------------------
+
+JCI_TICKER = "^JKSE"
+MIN_BETA_POINTS = 24
+
+
+def _series_returns(closes):
+    """Monthly returns from an ordered list of closing prices."""
+    out = []
+    for prev, curr in zip(closes, closes[1:]):
+        if prev > 0 and curr > 0:
+            out.append(curr / prev - 1)
+    return out
+
+
+def estimate_beta(stock_pairs, index_pairs, min_points=MIN_BETA_POINTS):
+    """Beta = cov(stock, index) / var(index) over common months.
+
+    Returns None when there is not enough overlapping history.
+    """
+    stock = dict(stock_pairs)
+    index = dict(index_pairs)
+    common = sorted(set(stock) & set(index))
+    s_ret = _series_returns([stock[t] for t in common])
+    m_ret = _series_returns([index[t] for t in common])
+    n = len(s_ret)
+    if n < min_points or n != len(m_ret):
+        return None
+    mean_s = statistics.mean(s_ret)
+    mean_m = statistics.mean(m_ret)
+    cov = sum((a - mean_s) * (b - mean_m) for a, b in zip(s_ret, m_ret)) / n
+    var_m = sum((b - mean_m) ** 2 for b in m_ret) / n
+    if var_m <= 0:
+        return None
+    return cov / var_m
+
+
+def fetch_beta(ticker, use_cache=True):
+    """Estimated beta vs ^JKSE, or None if insufficient history."""
+    stock = fetch_monthly_closes(ticker, use_cache)
+    index = fetch_monthly_closes(JCI_TICKER, use_cache, suffix=False)
+    return estimate_beta(stock, index)
