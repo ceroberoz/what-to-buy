@@ -44,21 +44,21 @@ def fcff(ebit, tax_rate, depreciation, capex, nwc_prev, nwc_curr):
     return ebit * (1 - tax_rate) + depreciation - capex - (nwc_curr - nwc_prev)
 
 
-def project_fcff(base_fcff, near_growth, terminal_growth, horizon):
-    """Project FCFF over the forecast horizon.
-
-    Growth starts at near_growth in year 1 and fades linearly to
-    terminal_growth in the final year. Returns a list of `horizon` values.
-    """
+def growth_schedule(near_growth, terminal_growth, horizon):
+    """Per-year growth rates: near_growth in year 1 fading linearly to terminal_growth."""
     if horizon < 1:
         raise ValueError("horizon must be >= 1")
+    if horizon == 1:
+        return [near_growth]
+    return [near_growth + (terminal_growth - near_growth) * (i - 1) / (horizon - 1)
+            for i in range(1, horizon + 1)]
+
+
+def project_fcff(base_fcff, near_growth, terminal_growth, horizon):
+    """Project FCFF over the forecast horizon following the growth schedule."""
     out = []
     value = base_fcff
-    for i in range(1, horizon + 1):
-        if horizon == 1:
-            growth = near_growth
-        else:
-            growth = near_growth + (terminal_growth - near_growth) * (i - 1) / (horizon - 1)
+    for growth in growth_schedule(near_growth, terminal_growth, horizon):
         value = value * (1 + growth)
         out.append(value)
     return out

@@ -230,6 +230,32 @@ def _verdict(upside):
     return "FAIRLY VALUED"
 
 
+def print_projection(ctx):
+    """Year-by-year FCFF projection with PV at WACC."""
+    print("\nFCFF projection (IDR)")
+    print("  {:>3}  {:>7}  {:>12}  {:>12}".format("Yr", "Growth", "FCFF", "PV"))
+    for i, (growth, fcff, pv) in enumerate(
+            zip(core.growth_schedule(ctx["growth"], ctx["terminal_growth"], ctx["horizon"]),
+                ctx["projected"], ctx["valuation"]["pv_years"]), start=1):
+        print("  {:>3}  {:>7.2%}  {:>12}  {:>12}".format(
+            i, growth, _fmt_idr(fcff), _fmt_idr(pv)))
+
+
+def print_sensitivity(ctx):
+    """Fair value per share across a WACC x terminal-growth grid."""
+    wacc_labels, growth_labels, rows = core.sensitivity_grid(
+        ctx["base_fcff"], ctx["growth"], ctx["horizon"], ctx["net_debt"], ctx["shares"],
+        ctx["wacc"], 0.01, ctx["terminal_growth"], 0.005, steps=3)
+    print("\nSensitivity: fair value / share (IDR)")
+    header = "  WACC \\ g  | " + " | ".join("{:>10}".format("{:.2%}".format(g)) for g in growth_labels)
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+    for wacc, row in zip(wacc_labels, rows):
+        cells = " | ".join(
+            "{:>10}".format("-" if value is None else "{:,.0f}".format(value)) for value in row)
+        print("  {:>9} | {}".format("{:.2%}".format(wacc), cells))
+
+
 def print_report(ctx):
     """Print the market data, assumptions, valuation chain, and verdict."""
     label = ctx["ticker"]
@@ -257,6 +283,8 @@ def print_report(ctx):
     print("  {:<26}: {:>20}".format("Terminal growth", "{:.2%}".format(ctx["terminal_growth"])))
     print("  {:<26}: {:>20}".format("Forecast horizon", "{} yr".format(ctx["horizon"])))
 
+    print_projection(ctx)
+
     v = ctx["valuation"]
     print("\nValuation chain")
     print("  {:<26}: {:>20}".format("PV of projected FCFF", _fmt_idr(sum(v["pv_years"]))))
@@ -270,6 +298,8 @@ def print_report(ctx):
     print("  {:<26}: {:>20}".format("Current price", "{:,.2f}".format(ctx["price"])))
     print("  {:<26}: {:>20}".format("Upside / downside", "{:+.2%}".format(ctx["upside"])))
     print("  {:<26}: {:>20}".format("Verdict", _verdict(ctx["upside"])))
+
+    print_sensitivity(ctx)
 
 
 def main(argv=None):
