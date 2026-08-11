@@ -65,19 +65,27 @@ what-to-buy/
 ├── pyproject.toml       # minimal uv/project metadata (no dependencies, requires-python >=3.9)
 ├── dcf.py               # CLI entry point: parse args, orchestrate, print report
 ├── dcf_core.py          # pure math: WACC, FCFF, discount, terminal value, sensitivity
-├── data_source.py       # network/parsing: Yahoo price+returns, idnfinancials statements, JSON cache
+├── data_source.py       # Yahoo chart+fundamentals, crumb auth, JSON cache, manual-input helpers
 └── test_dcf.py          # stdlib unittest for dcf_core + sample end-to-end
 ```
 
-### Data sources (primary → fallback)
+### Data sources (verified working → fallback)
+> Field-verified Aug 2026: `idnfinancials.com` and `idx.co.id` are Cloudflare/WAF-blocked from
+> terminals; Yahoo's IDX **fundamentals** coverage is essentially empty (revenue/shares only).
+> Price + beta via Yahoo chart are reliable. Statements therefore default to manual JSON input,
+> with an auto-attempt that emits a pre-filled template.
+
 1. **Current price & historical returns**: Yahoo Finance chart API
-   `https://query1.finance.yahoo.com/v8/finance/chart/{TICKER}.JK` — no auth, returns JSON (stdlib `urllib`).
-2. **Financial statements (IDR)**: `idnfinancials.com` company financial-statement pages (income,
-   balance, cash-flow). Parsed with `html.parser` into a normalized dict.
+   `https://query1.finance.yahoo.com/v8/finance/chart/{TICKER}.JK` — no auth, JSON, **verified 200 OK**.
+   (Short `User-Agent: Mozilla/5.0` + `Accept: */*` required; long UA strings get 429.)
+2. **Financial statements (IDR)**: auto-attempt via Yahoo quoteSummary fundamentals API
+   (cookie `A3` + crumb handshake, retries across `query1`/`query2`). For IDX this is sparse, so
+   when critical fields are missing the tool prints exactly which are missing, writes a
+   pre-filled template to `data/{ticker}.json`, and exits instructing the user to fill it and
+   re-run with `--input data/{ticker}.json`.
 3. **Beta**: OLS/regression of stock monthly returns vs `^JKSE` monthly returns from the same Yahoo
-   chart API. Fallback to β=1.0 with a warning if insufficient data.
-4. **Fallback if scraping fails**: user-supplied JSON file (statements, price, shares) — keeps tool
-   usable when third-party HTML changes.
+   chart API. Fallback to β=1.0 with a warning if insufficient data. **Verified** (SIDO ≈ 0.34).
+4. **Manual fallback**: user-supplied JSON (same normalized schema as the template).
 
 ### Calculation methodology
 - **WACC**: `Re = Rf + β·ERP`; `Rd = interest expense / interest-bearing debt` (cap if missing);
@@ -116,12 +124,12 @@ Tests: `uv run python -m unittest` (stdlib `unittest` only).
 
 Each task ends with a git commit (message prefixed `T<n>:`). Mark `[x]` in PLAN.md as tasks finish.
 
-- [ ] **T1 — Repo bootstrap**: `git init` + `.gitignore`; create `README.md` (usage, methodology, disclaimer) and minimal `pyproject.toml`; commit `T1: repo bootstrap (git init, .gitignore, README, pyproject)`.
-- [ ] **T2 — `dcf_core.py`**: implement pure functions with formulas + docstrings:
+- [x] **T1 — Repo bootstrap**: `git init` + `.gitignore`; create `README.md` (usage, methodology, disclaimer) and minimal `pyproject.toml`; commit `T1: repo bootstrap (git init, .gitignore, README, pyproject)`.
+- [x] **T2 — `dcf_core.py`**: implement pure functions with formulas + docstrings:
       `wacc`, `fcff`, `terminal_value`, `discount_fcf`, `project_fcff`, `fair_value_per_share`, `sensitivity_grid`; commit `T2`.
-- [ ] **T3 — `data_source.py` price+returns**: Yahoo chart API fetch (price, monthly closes), JSON cache, graceful network errors; commit `T3`.
-- [ ] **T4 — `data_source.py` beta**: regression of stock vs `^JKSE` monthly returns; fallback β=1.0 + warning; commit `T4`.
-- [ ] **T5 — `data_source.py` statements**: idnfinancials HTML parse → normalized statement dict; manual JSON fallback; commit `T5`.
+- [x] **T3 — `data_source.py` price+returns**: Yahoo chart API fetch (price, monthly closes), JSON cache, graceful network errors; commit `T3`.
+- [x] **T4 — `data_source.py` beta**: regression of stock vs `^JKSE` monthly returns; fallback β=1.0 + warning; commit `T4`.
+- [ ] **T5 — `data_source.py` statements**: auto-attempt Yahoo fundamentals (cookie+crumb), normalize to flat schema, manual JSON fallback + template writer; commit `T5`.
 - [ ] **T6 — `dcf.py` CLI**: `argparse` with adjustable flags, defaults, and range validation; wire fetch→compute→report; commit `T6`.
 - [ ] **T7 — Report printing**: FCFF projection table, EV→equity→per-share chain, upside %, sensitivity grid; commit `T7`.
 - [ ] **T8 — `test_dcf.py`**: `unittest` for all `dcf_core` functions (known-value cases) + end-to-end with fixed sample JSON; commit `T8`.
@@ -133,7 +141,7 @@ Each task ends with a git commit (message prefixed `T<n>:`). Mark `[x]` in PLAN.
 
 | Risk | Mitigation |
 |------|-----------|
-| `idnfinancials.com` HTML structure changes → scrape breaks | Manual JSON fallback + cache; keep parser in one isolated function |
+| IDX statements providers blocked/sparse (`idnfinancials`/`idx.co.id` Cloudflare+WAF, Yahoo fundamentals empty for IDX) | Auto-attempt Yahoo fundamentals; on missing fields write a pre-filled template and require `--input data/{ticker}.json`; clear list of missing fields |
 | Network failure / ticker typo / delisted ticker | Clear exit codes + message; use cached data when available |
 | Negative FCFF (loss-makers, high growth) | Warn and still value; user can override `--growth`/`--input` |
 | Negative or zero book equity | Fall back to market-value weights; warn |

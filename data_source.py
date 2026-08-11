@@ -2,18 +2,26 @@
 
 Uses only the Python standard library:
 - Yahoo Finance chart API for current price and historical monthly closes.
+- Yahoo Finance fundamentals API (crumb-authenticated) for financial statements.
 - A JSON cache under data/cache/ to avoid repeated network calls.
+- Manual JSON fallback for financial statements.
 """
 
+import http.cookiejar
 import json
 import os
 import statistics
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "cache")
 YAHOO_BASE = "https://query1.finance.yahoo.com/v8/finance/chart/{ticker}{suffix}"
+FUND_HOSTS = ("query1", "query2")
+FUND_BASE = "https://{host}.finance.yahoo.com/v10/finance/quoteSummary/{ticker}.JK"
+CRUMB_URL = "https://query1.finance.yahoo.com/v1/test/getcrumb"
+PRIME_URL = "https://fc.yahoo.com"
 USER_AGENT = "Mozilla/5.0"
 HEADERS = {
     "User-Agent": USER_AGENT,
@@ -160,3 +168,201 @@ def fetch_beta(ticker, use_cache=True):
     stock = fetch_monthly_closes(ticker, use_cache)
     index = fetch_monthly_closes(JCI_TICKER, use_cache, suffix=False)
     return estimate_beta(stock, index)
+
+
+# --- Yahoo fundamentals (financial statements) -------------------------------
+
+FUND_MODULES = (
+    "incomeStatementHistory",
+    "cashflowStatementHistory",
+    "balanceSheetHistory",
+    "defaultKeyStatistics",
+)
+
+
+def _authenticated_opener():
+    """Opener whose cookie jar holds Yahoo's A3 session cookie.
+
+    fc.yahoo.com answers 404 but still issues the A3 cookie via Set-Cookie.
+    """
+    jar = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+    opener.addheaders = list(HEADERS.items())
+    try:
+        opener.open(PRIME_URL, timeout=TIMEOUT).read()
+    except urllib.error.HTTPError:
+        pass  # expected: 404 with Set-Cookie
+    except urllib.error.URLError:
+        pass
+    return opener
+
+
+def _get_crumb(opener):
+    return opener.open(CRUMB_URL, timeout=TIMEOUT).read().decode("utf-8")
+
+
+def yahoo_fundamentals(ticker, modules=FUND_MODULES, use_cache=True, ttl=DEFAULT_TTL, retries=5):
+    """Fetch the quoteSummary result dict for an IDX ticker.
+
+    Yahoo needs a cookie+crumb handshake and is flaky, so we retry with a
+    fresh session and rotate between query1/query2 hosts.
+    """
+    key = "fund_{}_{}".format(ticker, ",".join(modules))
+    if use_cache:
+        cached = _cache_get(key, ttl)
+        if cached is not None:
+            return cached
+    for attempt in range(retries):
+        opener = _authenticated_opener()
+        try:
+            crumb = _get_crumb(opener)
+            host = FUND_HOSTS[attempt % len(FUND_HOSTS)]
+            url = FUND_BASE.format(host=host, ticker=ticker) + "?modules={}&crumb={}".format(
+                ",".join(modules), urllib.parse.quote(crumb)
+            )
+            payload = json.loads(opener.open(url, timeout=TIMEOUT).read().decode("utf-8"))
+            result = payload["quoteSummary"]["result"]
+            if not result:
+                raise DataSourceError("no fundamentals for {}".format(ticker))
+            if use_cache:
+                _cache_set(key, result[0])
+            return result[0]
+        except urllib.error.HTTPError as exc:
+            if attempt == retries - 1:
+                raise DataSourceError("fundamentals HTTP {} for {}".format(exc.code, ticker)) from exc
+            time.sleep(1 + attempt)
+        except urllib.error.URLError as exc:
+            if attempt == retries - 1:
+                raise DataSourceError("network error fetching fundamentals for {}: {}".format(ticker, exc.reason)) from exc
+            time.sleep(1 + attempt)
+    raise DataSourceError("could not fetch fundamentals for {}".format(ticker))
+
+
+def _num(row, *keys):
+    """First numeric value found among keys in a quoteSummary statement row."""
+    for key in keys:
+        value = row.get(key)
+        if isinstance(value, dict):
+            raw = value.get("raw")
+            if raw is not None:
+                return float(raw)
+        elif value is not None:
+            return float(value)
+    return None
+
+
+def normalize_statements(raw):
+    """Convert the raw quoteSummary result into a flat, normalized dict.
+
+    Uses the latest two fiscal years (for the working-capital delta) and the
+    latest cash-flow / balance-sheet years. Missing fields stay None.
+    """
+    income = raw["incomeStatementHistory"]["incomeStatementHistory"]
+    cashflow = raw["cashflowStatementHistory"]["cashflowStatements"]
+    balance = raw["balanceSheetHistory"]["balanceSheetStatements"]
+    keystats = raw["defaultKeyStatistics"]
+
+    i0, i1 = income[0], income[1]
+    c0 = cashflow[0]
+    b0, b1 = balance[0], balance[1]
+
+    capex = _num(c0, "capitalExpenditures")
+    if capex is not None:
+        capex = abs(capex)
+
+    shares = _num(keystats, "sharesOutstanding")
+    if shares is None:
+        shares = _num(b0, "ordinarySharesNumber", "totalCommonSharesOutstanding")
+
+    return {
+        "source": "yahoo",
+        "fiscal_year": i0.get("endDate", {}).get("fmt"),
+        "revenue": _num(i0, "totalRevenue"),
+        "ebit": _num(i0, "operatingIncome", "ebit"),
+        "pre_tax_income": _num(i0, "incomeBeforeTax", "pretaxIncome"),
+        "tax_expense": _num(i0, "incomeTaxExpense", "taxProvision"),
+        "interest_expense": _num(i0, "interestExpense"),
+        "depreciation": _num(c0, "depreciation", "depreciationAndAmortization"),
+        "capex": capex,
+        "operating_cashflow": _num(c0, "operatingCashflow", "totalCashFromOperatingActivities"),
+        "cash": _num(b0, "cash", "cashAndCashEquivalents"),
+        "current_assets": _num(b0, "totalCurrentAssets"),
+        "current_liabilities": _num(b0, "totalCurrentLiabilities"),
+        "current_assets_prev": _num(b1, "totalCurrentAssets"),
+        "current_liabilities_prev": _num(b1, "totalCurrentLiabilities"),
+        "short_term_debt": _num(b0, "shortLongTermDebt", "currentPortionOfLongTermDebt"),
+        "long_term_debt": _num(b0, "longTermDebt"),
+        "equity": _num(b0, "totalStockholderEquity"),
+        "shares_outstanding": shares,
+    }
+
+
+def fetch_financials(ticker, use_cache=True):
+    """Normalized financial statements for an IDX ticker (annual, IDR)."""
+    raw = yahoo_fundamentals(ticker, use_cache=use_cache)
+    return normalize_statements(raw)
+
+
+def load_financials_json(path):
+    """Load a user-supplied manual financials file (same flat schema)."""
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except OSError as exc:
+        raise DataSourceError("cannot read input file {}: {}".format(path, exc)) from exc
+    except ValueError as exc:
+        raise DataSourceError("invalid JSON in {}: {}".format(path, exc)) from exc
+    if not isinstance(data, dict):
+        raise DataSourceError("input file {} must contain a JSON object".format(path))
+    data.setdefault("source", "manual")
+    return data
+
+
+REQUIRED_FIELDS = (
+    "ebit",
+    "depreciation",
+    "capex",
+    "cash",
+    "current_assets",
+    "current_liabilities",
+    "current_assets_prev",
+    "current_liabilities_prev",
+    "shares_outstanding",
+)
+
+
+def missing_fields(financials):
+    """Names of critical fields missing from a normalized financials dict."""
+    return [key for key in REQUIRED_FIELDS if financials.get(key) is None]
+
+
+def write_template(financials, path):
+    """Write a manual-input JSON template, pre-filled with known values."""
+    if not os.path.isdir(os.path.dirname(path)):
+        raise DataSourceError("template directory does not exist: {}".format(os.path.dirname(path)))
+    template = {
+        "ticker": financials.get("ticker"),
+        "source": "manual",
+        "fiscal_year": financials.get("fiscal_year"),
+        "revenue": financials.get("revenue"),
+        "ebit": financials.get("ebit"),
+        "pre_tax_income": financials.get("pre_tax_income"),
+        "tax_expense": financials.get("tax_expense"),
+        "interest_expense": financials.get("interest_expense"),
+        "depreciation": financials.get("depreciation"),
+        "capex": financials.get("capex"),
+        "operating_cashflow": financials.get("operating_cashflow"),
+        "cash": financials.get("cash"),
+        "current_assets": financials.get("current_assets"),
+        "current_liabilities": financials.get("current_liabilities"),
+        "current_assets_prev": financials.get("current_assets_prev"),
+        "current_liabilities_prev": financials.get("current_liabilities_prev"),
+        "short_term_debt": financials.get("short_term_debt"),
+        "long_term_debt": financials.get("long_term_debt"),
+        "equity": financials.get("equity"),
+        "shares_outstanding": financials.get("shares_outstanding"),
+    }
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(template, fh, indent=2, ensure_ascii=False)
+        fh.write("\n")
+    return path
