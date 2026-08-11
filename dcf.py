@@ -9,6 +9,7 @@ import sys
 
 import data_source as ds
 import dcf_core as core
+import screen
 
 DEFAULTS = {
     "risk_free": 0.065,
@@ -78,7 +79,25 @@ def build_parser():
     parser.add_argument(
         "--no-cache", action="store_true",
         help="bypass the local data cache")
+    parser.add_argument(
+        "--skip-check", action="store_true",
+        help="skip the eligibility whitelist check (data/eligible_tickers.json)")
     return parser
+
+
+def eligibility_message(ticker, doc):
+    """None when ticker is on the whitelist, else a skip message.
+
+    doc is the output of screen.load_eligible(); doc must not be None.
+    """
+    if ticker in doc["tickers"]:
+        return None
+    meta = (doc.get("meta") or {}).get(ticker)
+    if meta and meta.get("reason"):
+        reason = meta["reason"]
+    else:
+        reason = "not on the eligible list (see {})".format(screen.ELIGIBLE_FILE)
+    return "skipped: {} is not eligible for DCF ({})".format(ticker, reason)
 
 
 def build_context(args):
@@ -304,6 +323,16 @@ def print_report(ctx):
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    if not args.skip_check:
+        doc = screen.load_eligible()
+        if doc is None:
+            print("warning: no eligibility list at {}; run `uv run screen.py ...` to build it".format(
+                screen.ELIGIBLE_FILE), file=sys.stderr)
+        else:
+            message = eligibility_message(args.ticker.upper(), doc)
+            if message is not None:
+                print(message)
+                return 0
     try:
         context = build_context(args)
     except ds.DataSourceError as exc:
