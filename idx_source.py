@@ -10,6 +10,7 @@ JSON cache helpers from data_source (data/cache/); downloaded XLSX files are
 cached under data/cache/idx/.
 """
 
+import datetime
 import json
 import os
 import urllib.parse
@@ -129,6 +130,39 @@ def download_xlsx(attachment, dest_dir=None, use_cache=True):
     with open(local_path, "wb") as fh:
         fh.write(response.content)
     return local_path
+
+
+# --- IDX financials orchestration ---------------------------------------------
+
+def fetch_financials(ticker, year=None, use_cache=True, max_lookback=3):
+    """Full IDX pipeline: report index -> xlsx download -> parse -> normalize.
+
+    Steps back up to max_lookback years when the annual report for the
+    requested year has not been filed yet. Returns (normalized, warnings).
+    """
+    warnings = []
+    if year is None:
+        year = datetime.date.today().year
+    for candidate in range(year, year - max_lookback - 1, -1):
+        results = fetch_report_index(ticker, candidate, use_cache)
+        attachment = None
+        for result in results:
+            attachment = find_xlsx_attachment(result)
+            if attachment is not None:
+                break
+        if attachment is None:
+            continue
+        path = download_xlsx(attachment, use_cache=use_cache)
+        parsed = parse_workbook(path)
+        normalized = normalize(parsed)
+        if candidate != year:
+            warnings.append(
+                "IDX: no annual report for {} in FY{}; using latest available (FY{})".format(
+                    ticker, year, candidate))
+        return normalized, warnings
+    raise IdxSourceError(
+        "no IDX annual report found for {} (years {}-{})".format(
+            ticker, year, year - max_lookback))
 
 
 # --- XLSX soft-copy parser --------------------------------------------------

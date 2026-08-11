@@ -9,6 +9,7 @@ import sys
 
 import data_source as ds
 import dcf_core as core
+import idx_source as idx
 import screen
 
 DEFAULTS = {
@@ -85,6 +86,39 @@ def build_parser():
     return parser
 
 
+def fetch_financials_chain(ticker, use_cache=True, warnings=None):
+    """Financials from Yahoo, falling back to IDX when Yahoo is incomplete.
+
+    Returns a financials dict; warnings (created when omitted) collects notes
+    for the report.
+    """
+    if warnings is None:
+        warnings = []
+    try:
+        financials = ds.fetch_financials(ticker, use_cache)
+    except ds.DataSourceError as exc:
+        financials = None
+        warnings.append("Yahoo fundamentals unavailable: {}".format(exc))
+    if financials is not None and not ds.missing_fields(financials):
+        return financials
+    try:
+        idx_financials, idx_warnings = idx.fetch_financials(ticker, use_cache=use_cache)
+        warnings.extend(idx_warnings)
+        if financials is not None and financials.get("shares_outstanding") is not None:
+            idx_financials["shares_outstanding"] = financials["shares_outstanding"]
+        if not ds.missing_fields(idx_financials):
+            return idx_financials
+        if financials is None:
+            return idx_financials
+        return financials
+    except idx.IdxSourceError as exc:
+        warnings.append("IDX source unavailable: {}".format(exc))
+        if financials is not None:
+            return financials
+        raise ds.DataSourceError(
+            "could not fetch financials for {} from Yahoo or IDX".format(ticker))
+
+
 def eligibility_message(ticker, doc):
     """None when ticker is on the whitelist, else a skip message.
 
@@ -109,7 +143,7 @@ def build_context(args):
     if args.input:
         financials = ds.load_financials_json(args.input)
     else:
-        financials = ds.fetch_financials(ticker, use_cache)
+        financials = fetch_financials_chain(ticker, use_cache, warnings)
         missing = ds.missing_fields(financials)
         if missing:
             os.makedirs("data", exist_ok=True)
@@ -286,10 +320,13 @@ def print_report(ctx):
     print("=" * 60)
 
     print("\nMarket data")
+    source_label = {"yahoo": "Yahoo", "idx": "IDX", "manual": "Manual"}.get(
+        ctx.get("source"), ctx.get("source") or "-")
     print("  {:<26}: {:>20}".format("Price (IDR)", "{:,.2f}".format(ctx["price"])))
     print("  {:<26}: {:>20}".format("Shares outstanding", _fmt_idr(ctx["shares"])))
     print("  {:<26}: {:>20}".format("Market cap", _fmt_idr(ctx["market_cap"])))
     print("  {:<26}: {:>20}".format("Beta (vs IHSG)", "{:.2f}".format(ctx["beta"])))
+    print("  {:<26}: {:>20}".format("Financial source", source_label))
 
     print("\nAssumptions")
     print("  {:<26}: {:>20}".format("Risk-free rate", "{:.2%}".format(ctx["risk_free"])))
