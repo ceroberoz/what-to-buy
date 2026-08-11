@@ -74,6 +74,46 @@ def _entry_from_fetch(ticker, sector, industry, first_trade_ts, now_ts):
     }
 
 
+def universe_entry(quote, financial_symbols, now_ts):
+    """(ticker, meta entry) from a screener quote like {'symbol': 'AADI.JK'}.
+
+    Eligible when listed > MIN_AGE_YEARS years and not in the Financial
+    Services sector. Tickers without a first trade date become 'no_data'.
+    """
+    symbol = quote.get("symbol") or ""
+    ticker = symbol.split(".")[0].upper()
+    first_trade_ms = quote.get("firstTradeDateMilliseconds")
+    if not ticker or first_trade_ms is None:
+        return ticker, {"status": "no_data", "reason": "missing first trade date"}
+    first_trade_ts = int(first_trade_ms / 1000)
+    sector = "Financial Services" if symbol in financial_symbols else None
+    ok, reason = eligibility(sector, None, first_trade_ts, now_ts)
+    return ticker, {
+        "sector": sector,
+        "industry": None,
+        "listed": _ts_to_date(first_trade_ts),
+        "age_years": round(age_years(first_trade_ts, now_ts), 1),
+        "status": "eligible" if ok else "excluded",
+        "reason": reason,
+    }
+
+
+def merge_universe(existing_entries, universe_quotes, financial_symbols, now_ts):
+    """(merged, added) adding all universe tickers while preserving existing entries.
+
+    existing_entries is a ticker -> meta entry map (e.g. from a loaded
+    whitelist); existing entries are never overwritten.
+    """
+    merged = dict(existing_entries or {})
+    added = []
+    for quote in universe_quotes:
+        ticker, entry = universe_entry(quote, financial_symbols, now_ts)
+        if ticker and ticker not in merged:
+            merged[ticker] = entry
+            added.append(ticker)
+    return merged, added
+
+
 def load_eligible(path=ELIGIBLE_FILE):
     """Whitelist doc {updated, tickers, meta} or None when absent/corrupt."""
     try:
@@ -227,6 +267,9 @@ def build_parser():
         description="Build the IDX eligibility whitelist (>5y listed, non-financial).")
     parser.add_argument("tickers", nargs="*", help="IDX tickers to screen "
                         "(default: scan tickers already present under data/)")
+    parser.add_argument("--all", action="store_true",
+                        help="merge the full IDX universe into the whitelist "
+                             "(no per-ticker screening)")
     parser.add_argument("--list", metavar="FILE", help="file with one ticker per line")
     parser.add_argument("--no-cache", action="store_true", help="bypass the local data cache")
     parser.add_argument("--output", metavar="FILE.json", default=ELIGIBLE_FILE,
@@ -234,8 +277,29 @@ def build_parser():
     return parser
 
 
+def run_all(args):
+    """Merge the full IDX universe into the existing whitelist."""
+    use_cache = not args.no_cache
+    existing = load_eligible(args.output)
+    existing_entries = dict(existing.get("meta") or {}) if existing else {}
+    print("Fetching full IDX universe (exchange=JKT) ...")
+    universe = fetch_universe(use_cache)
+    print("Fetching Financial Services sector ...")
+    financial = fetch_financial_symbols(use_cache)
+    merged, added = merge_universe(existing_entries, universe, financial, int(time.time()))
+    path = save_eligible(merged, args.output)
+    eligible = [t for t, e in merged.items() if e.get("status") == "eligible"]
+    excluded = [t for t, e in merged.items() if e.get("status") == "excluded"]
+    no_data = [t for t, e in merged.items() if e.get("status") == "no_data"]
+    print("\n{} total, {} eligible, {} excluded, {} no data ({} added) -> {}".format(
+        len(merged), len(eligible), len(excluded), len(no_data), len(added), path))
+    return 0
+
+
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    if args.all:
+        return run_all(args)
     tickers = list(args.tickers)
     if args.list:
         try:
