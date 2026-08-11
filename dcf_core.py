@@ -130,8 +130,11 @@ def sensitivity_grid(base_fcff, near_growth, horizon, net_debt, shares,
     for w in wacc_labels:
         row = []
         for g in growth_labels:
-            proj = project_fcff(base_fcff, near_growth, g, horizon)
-            ev = dcf_valuation(proj, w, g, mid_year=False)["enterprise_value"]
-            row.append(fair_value_per_share(equity_value(ev, net_debt), shares))
+            try:
+                proj = project_fcff(base_fcff, near_growth, g, horizon)
+                ev = dcf_valuation(proj, w, g, mid_year=False)["enterprise_value"]
+                row.append(fair_value_per_share(equity_value(ev, net_debt), shares))
+            except ValueError:
+                row.append(None)  # g >= wacc has no finite terminal value
         rows.append(row)
     return wacc_labels, growth_labels, rows
