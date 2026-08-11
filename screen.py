@@ -47,8 +47,8 @@ def eligibility(sector, industry, first_trade_ts, now_ts):
     if any(word in industry_norm for word in EXCLUDED_INDUSTRY_WORDS):
         return False, "bank industry: {}".format(industry)
     years = age_years(first_trade_ts, now_ts)
-    if years < MIN_AGE_YEARS:
-        return False, "listed {:.1f} years (< {})".format(years, MIN_AGE_YEARS)
+    if years <= MIN_AGE_YEARS:
+        return False, "listed {:.1f} years (needs > {})".format(years, MIN_AGE_YEARS)
     return True, ""
 
 

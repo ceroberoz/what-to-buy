@@ -6,11 +6,14 @@ Run:  uv run python -m unittest
 import contextlib
 import io
 import os
+import shutil
+import tempfile
 import unittest
 
 import dcf
 import dcf_core as core
 import data_source as ds
+import screen
 
 SAMPLE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "sample.json")
 
@@ -189,6 +192,103 @@ class TestEndToEnd(unittest.TestCase):
         self.assertIn("FCFF projection", output)
         self.assertIn("Sensitivity", output)
         self.assertIn("Verdict", output)
+
+
+class TestEligibilityRule(unittest.TestCase):
+    T0 = 1_000_000_000  # 2001-09-09
+    NOW_OLD = T0 + int(10 * 365.25 * 86400)
+
+    def test_old_non_bank_eligible(self):
+        ok, reason = screen.eligibility(
+            "Consumer Defensive", "Packaged Foods", self.T0, self.NOW_OLD)
+        self.assertTrue(ok)
+        self.assertEqual(reason, "")
+
+    def test_financial_sector_excluded(self):
+        ok, reason = screen.eligibility(
+            "Financial Services", "Banks - Regional", self.T0, self.NOW_OLD)
+        self.assertFalse(ok)
+        self.assertIn("Financial Services", reason)
+
+    def test_bank_keyword_in_industry(self):
+        ok, reason = screen.eligibility(
+            "Consumer Cyclical", "Money Center Banks", self.T0, self.NOW_OLD)
+        self.assertFalse(ok)
+        self.assertIn("bank", reason.lower())
+
+    def test_listed_under_five_years_excluded(self):
+        now = self.T0 + int(4 * 365.25 * 86400)
+        ok, reason = screen.eligibility("Consumer Defensive", "Packaged Foods", self.T0, now)
+        self.assertFalse(ok)
+        self.assertIn("needs > 5", reason)
+
+    def test_exactly_five_years_excluded(self):
+        now = self.T0 + int(5 * 365.25 * 86400)
+        ok, _ = screen.eligibility("Consumer Defensive", "Packaged Foods", self.T0, now)
+        self.assertFalse(ok)
+
+
+class TestEligibilityWhitelistIO(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmpdir)
+        self.path = os.path.join(self.tmpdir, "eligible.json")
+
+    def test_save_load_round_trip(self):
+        entries = {
+            "SIDO": {"status": "eligible", "reason": "", "sector": "Consumer Defensive",
+                     "industry": "Packaged Foods", "listed": "2013-12-18", "age_years": 12.6},
+            "BBRI": {"status": "excluded", "reason": "financial sector: Financial Services",
+                     "sector": "Financial Services", "industry": "Banks - Regional",
+                     "listed": "2003-11-10", "age_years": 22.8},
+        }
+        screen.save_eligible(entries, self.path)
+        doc = screen.load_eligible(self.path)
+        self.assertEqual(doc["tickers"], ["SIDO"])
+        self.assertEqual(doc["meta"]["BBRI"]["status"], "excluded")
+        self.assertEqual(doc["meta"]["SIDO"]["sector"], "Consumer Defensive")
+
+    def test_load_missing_returns_none(self):
+        self.assertIsNone(screen.load_eligible(self.path))
+
+
+class TestEligibilityCheck(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmpdir)
+        self.path = os.path.join(self.tmpdir, "eligible.json")
+        entries = {
+            "SIDO": {"status": "eligible", "reason": "", "sector": "Consumer Defensive",
+                     "industry": "Packaged Foods", "listed": "2013-12-18", "age_years": 12.6},
+            "BBRI": {"status": "excluded", "reason": "financial sector: Financial Services",
+                     "sector": "Financial Services", "industry": "Banks - Regional",
+                     "listed": "2003-11-10", "age_years": 22.8},
+        }
+        screen.save_eligible(entries, self.path)
+        self._orig_file = screen.ELIGIBLE_FILE
+        screen.ELIGIBLE_FILE = self.path
+
+    def tearDown(self):
+        screen.ELIGIBLE_FILE = self._orig_file
+
+    def test_eligible_passes(self):
+        self.assertIsNone(dcf.eligibility_message("SIDO", screen.load_eligible()))
+
+    def test_excluded_reports_reason(self):
+        msg = dcf.eligibility_message("BBRI", screen.load_eligible())
+        self.assertIn("skipped: BBRI", msg)
+        self.assertIn("Financial Services", msg)
+
+    def test_unknown_ticker_generic_reason(self):
+        msg = dcf.eligibility_message("ZZZZ", screen.load_eligible())
+        self.assertIn("not on the eligible list", msg)
+
+    def test_main_skips_bank_without_network(self):
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            rc = dcf.main(["BBRI"])
+        self.assertEqual(rc, 0)
+        self.assertIn("skipped: BBRI", buffer.getvalue())
 
 
 if __name__ == "__main__":
