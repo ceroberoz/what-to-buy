@@ -4,5 +4,6 @@ __pycache__/
 data/cache/
 data/*.json
 !data/sample.json
+!data/eligible_tickers.json
 *.egg-info/
 .DS_Store
