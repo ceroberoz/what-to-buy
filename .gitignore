@@ -5,3 +5,4 @@ data/cache/
 data/*.json
 !data/sample.json
 *.egg-info/
+.DS_Store
