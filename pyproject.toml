@@ -3,3 +3,7 @@ name = "what-to-buy"
 version = "0.1.0"
 description = "FCFF DCF valuator for Indonesian (IDX) listed non-financial stocks"
 requires-python = ">=3.14"
+dependencies = [
+    "curl-cffi>=0.16.0",
+    "openpyxl>=3.1.5",
+]
