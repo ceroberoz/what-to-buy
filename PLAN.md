@@ -1,6 +1,6 @@
 # PLAN.md — "What-to-Buy": DCF Valuator for Indonesian Listed Stocks (Non-Financials)
 
-> Status: **DRAFT — awaiting user approval before code edits** (per AGENTS.md Planning Protocol)
+> Status: **COMPLETE** — all tasks executed and committed (see git log).
 
 ---
 
@@ -129,11 +129,11 @@ Each task ends with a git commit (message prefixed `T<n>:`). Mark `[x]` in PLAN.
       `wacc`, `fcff`, `terminal_value`, `discount_fcf`, `project_fcff`, `fair_value_per_share`, `sensitivity_grid`; commit `T2`.
 - [x] **T3 — `data_source.py` price+returns**: Yahoo chart API fetch (price, monthly closes), JSON cache, graceful network errors; commit `T3`.
 - [x] **T4 — `data_source.py` beta**: regression of stock vs `^JKSE` monthly returns; fallback β=1.0 + warning; commit `T4`.
-- [ ] **T5 — `data_source.py` statements**: auto-attempt Yahoo fundamentals (cookie+crumb), normalize to flat schema, manual JSON fallback + template writer; commit `T5`.
-- [ ] **T6 — `dcf.py` CLI**: `argparse` with adjustable flags, defaults, and range validation; wire fetch→compute→report; commit `T6`.
-- [ ] **T7 — Report printing**: FCFF projection table, EV→equity→per-share chain, upside %, sensitivity grid; commit `T7`.
-- [ ] **T8 — `test_dcf.py`**: `unittest` for all `dcf_core` functions (known-value cases) + end-to-end with fixed sample JSON; commit `T8`.
-- [ ] **T9 — Final gate**: `python -m py_compile *.py`, `uv run python -m unittest`, and a live sanity run on `SIDO`; mark remaining tasks `[x]`; final commit `T9: final gate`.
+- [x] **T5 — `data_source.py` statements**: auto-attempt Yahoo fundamentals (cookie+crumb), normalize to flat schema, manual JSON fallback + template writer; commit `T5`.
+- [x] **T6 — `dcf.py` CLI**: `argparse` with adjustable flags, defaults, and range validation; wire fetch→compute→report; commit `T6`.
+- [x] **T7 — Report printing**: FCFF projection table, EV→equity→per-share chain, upside %, sensitivity grid; commit `T7`.
+- [x] **T8 — `test_dcf.py`**: `unittest` for all `dcf_core` functions (known-value cases) + end-to-end with fixed sample JSON; commit `T8`.
+- [x] **T9 — Final gate**: `python -m py_compile *.py`, `uv run python -m unittest`, and a live sanity run on `SIDO`; mark remaining tasks `[x]`; final commit `T9: final gate`.
 
 ---
 

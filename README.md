@@ -17,17 +17,25 @@ Built with **only the Python standard library** (zero third-party packages).
 ## Requirements
 
 - Python 3.9+
-- Optional: [uv](https://docs.astral.sh/uv/) (preferred runner)
+- Optional: [uv](https://docs.astral.sh/uv/) (preferred runner) — install with
+  `curl -LsSf https://astral.sh/uv/install.sh | sh`
 
 ## Usage
 
 ```bash
 # Preferred (uv):
-uv run dcf.py SIDO
+uv run dcf.py SIDO --input data/SIDO.json
 
 # Fallback (plain Python):
-python3 dcf.py SIDO
+python3 dcf.py SIDO --input data/SIDO.json
 ```
+
+> **Statements data**: IDX financial statements are not reliably available from free
+> terminal-accessible APIs (verified: `idnfinancials.com`/`idx.co.id` are bot-blocked; Yahoo's
+> fundamentals data for IDX stocks is empty). The tool auto-fetches **price and beta** from Yahoo
+> and writes a pre-filled template to `data/{TICKER}.json` on first run. Fill the missing fields
+> from the company's published financials (e.g. via idnfinancials in a browser), then re-run with
+> `--input data/{TICKER}.json`. See `data/sample.json` for the expected schema.
 
 ### Adjustable assumptions (with defaults)
 
@@ -62,8 +70,8 @@ uv run python -m unittest
 ## Methodology
 
 1. **Current price**: Yahoo Finance chart API (`{TICKER}.JK`).
-2. **Financials (IDR)**: scraped from `idnfinancials.com` (income / balance / cash-flow),
-   falling back to a user-supplied JSON file.
+2. **Financials (IDR)**: auto-attempted from Yahoo's fundamentals API; when sparse (typical for
+   IDX), the tool writes a pre-filled template for manual completion and uses it via `--input`.
 3. **Beta**: regression of monthly stock returns against IHSG (`^JKSE`); defaults to 1.0 with a
    warning if insufficient history.
 4. **WACC**:
@@ -84,7 +92,7 @@ what-to-buy/
 ├── pyproject.toml
 ├── dcf.py           # CLI entry point
 ├── dcf_core.py      # pure DCF math
-├── data_source.py   # Yahoo + idnfinancials retrieval
+├── data_source.py   # Yahoo chart + fundamentals, cache, manual-input helpers
 └── test_dcf.py      # stdlib unittest
 ```
 

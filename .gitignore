@@ -2,4 +2,6 @@ __pycache__/
 *.pyc
 .venv/
 data/cache/
+data/*.json
+!data/sample.json
 *.egg-info/
