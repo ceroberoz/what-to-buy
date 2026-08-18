@@ -364,6 +364,13 @@ def parse_workbook(path):
     if depreciation is None:
         parsed["warnings"].append("depreciation movement not found")
 
+    # Guard: some IDX XLSX files ship with empty data cells (labels only, no
+    # numbers).  Detect this early so the caller can fall through to the next
+    # source instead of producing a template with all-None fields.
+    if parsed.get("revenue") is None and parsed.get("ebit") is None:
+        raise IdxSourceError(
+            "XLSX workbook has no usable numeric data (empty data cells)")
+
     return parsed
 
 

@@ -405,6 +405,23 @@ class TestIdxParser(unittest.TestCase):
         self.assertLessEqual(len(self.parsed["warnings"]), 1)
 
 
+class TestIdxEmptyWorkbook(unittest.TestCase):
+    def test_empty_data_raises(self):
+        import unittest.mock as mock
+        empty_parsed = {
+            "multiplier": 1e6, "warnings": [],
+            "revenue": None, "ebit": None, "pre_tax_income": None,
+            "tax_expense": None, "interest_expense": None,
+            "depreciation": None, "capex": None, "operating_cashflow": None,
+            "cash": None, "current_assets": None, "current_liabilities": None,
+            "current_assets_prev": None, "current_liabilities_prev": None,
+            "short_term_debt": 0, "long_term_debt": 0, "equity": None,
+        }
+        with mock.patch("idx_source.parse_workbook", return_value=empty_parsed):
+            with self.assertRaises(idx_source.IdxSourceError):
+                idx_source.fetch_financials("FAKE", year=2025, use_cache=False)
+
+
 class TestIdxHttp(unittest.TestCase):
     """Mocked-HTTP tests for fetch_report_index and download_xlsx."""
 
