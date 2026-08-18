@@ -5,6 +5,7 @@ Run:  uv run python -m unittest
 
 import contextlib
 import io
+import json
 import os
 import shutil
 import tempfile
@@ -13,7 +14,10 @@ import unittest
 import dcf
 import dcf_core as core
 import data_source as ds
+import idx_source
 import screen
+
+import unittest.mock as mock
 
 SAMPLE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "sample.json")
 
@@ -340,6 +344,192 @@ class TestUniverseMerge(unittest.TestCase):
         merged, added = screen.merge_universe({"SIDO": {"status": "eligible"}}, [], set(), self.NOW)
         self.assertEqual(merged, {"SIDO": {"status": "eligible"}})
         self.assertEqual(added, [])
+
+
+FIXTURE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "tests", "fixtures", "FinancialStatement-2025-Tahunan-SIDO.xlsx",
+)
+
+
+class TestIdxParser(unittest.TestCase):
+    """Parser unit tests using the real SIDO fixture (no network)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.parsed = idx_source.parse_workbook(FIXTURE)
+
+    def test_parse_revenue(self):
+        self.assertEqual(self.parsed["revenue"], 4_079_659)
+
+    def test_parse_ebit(self):
+        self.assertEqual(self.parsed["ebit"], 1_523_349)
+
+    def test_parse_tax_expense(self):
+        self.assertEqual(self.parsed["tax_expense"], 345_216)
+
+    def test_parse_interest(self):
+        self.assertEqual(self.parsed["interest_expense"], 694)
+
+    def test_parse_depreciation(self):
+        self.assertEqual(self.parsed["depreciation"], 123_729)
+
+    def test_parse_capex(self):
+        self.assertEqual(self.parsed["capex"], 61_984)
+
+    def test_parse_cashflow(self):
+        self.assertEqual(self.parsed["operating_cashflow"], 1_253_401)
+
+    def test_parse_balance_sheet(self):
+        self.assertEqual(self.parsed["cash"], 462_593)
+        self.assertEqual(self.parsed["current_assets"], 1_986_717)
+        self.assertEqual(self.parsed["current_assets_prev"], 2_203_551)
+        self.assertEqual(self.parsed["current_liabilities"], 514_644)
+        self.assertEqual(self.parsed["current_liabilities_prev"], 411_316)
+        self.assertEqual(self.parsed["equity"], 3_120_434)
+
+    def test_parse_debt(self):
+        self.assertEqual(self.parsed["short_term_debt"], 4_110)
+        self.assertEqual(self.parsed["long_term_debt"], 0)
+
+    def test_parse_multiplier(self):
+        self.assertEqual(self.parsed["multiplier"], 1e6)
+
+    def test_normalize_full_idr(self):
+        normalized = idx_source.normalize(self.parsed)
+        self.assertAlmostEqual(normalized["revenue"], 4_079_659 * 1e6)
+        self.assertEqual(normalized["source"], "idx")
+        self.assertIsNone(normalized["shares_outstanding"])
+
+    def test_no_warnings_on_fixture(self):
+        self.assertLessEqual(len(self.parsed["warnings"]), 1)
+
+
+class TestIdxHttp(unittest.TestCase):
+    """Mocked-HTTP tests for fetch_report_index and download_xlsx."""
+
+    def _fake_response(self, status_code=200, text="{}", content=b""):
+        resp = mock.MagicMock()
+        resp.status_code = status_code
+        resp.text = text
+        resp.content = content
+        return resp
+
+    def test_fetch_report_index_success(self):
+        results = [{"ReportTitle": "Annual"}]
+        body = json.dumps({"Results": results})
+        resp = self._fake_response(200, body)
+        with mock.patch.object(idx_source, "_get_session") as gs, \
+             mock.patch.object(idx_source, "_cache_get", return_value=None), \
+             mock.patch.object(idx_source, "_cache_set"):
+            gs.return_value.get.return_value = resp
+            out = idx_source.fetch_report_index("SIDO", 2025, use_cache=False)
+        self.assertEqual(out, results)
+
+    def test_fetch_report_index_empty_results(self):
+        body = json.dumps({"message": "not found"})
+        resp = self._fake_response(200, body)
+        with mock.patch.object(idx_source, "_get_session") as gs, \
+             mock.patch.object(idx_source, "_cache_get", return_value=None):
+            gs.return_value.get.return_value = resp
+            out = idx_source.fetch_report_index("SIDO", 2025, use_cache=False)
+        self.assertEqual(out, [])
+
+    def test_fetch_report_index_http_error(self):
+        resp = self._fake_response(500, "Internal Server Error")
+        with mock.patch.object(idx_source, "_get_session") as gs, \
+             mock.patch.object(idx_source, "_cache_get", return_value=None):
+            gs.return_value.get.return_value = resp
+            with self.assertRaises(idx_source.IdxSourceError):
+                idx_source.fetch_report_index("SIDO", 2025, use_cache=False)
+
+    def test_fetch_report_index_invalid_json(self):
+        resp = self._fake_response(200, "not json")
+        with mock.patch.object(idx_source, "_get_session") as gs, \
+             mock.patch.object(idx_source, "_cache_get", return_value=None):
+            gs.return_value.get.return_value = resp
+            with self.assertRaises(idx_source.IdxSourceError):
+                idx_source.fetch_report_index("SIDO", 2025, use_cache=False)
+
+    def test_find_xlsx_attachment_found(self):
+        result = {
+            "Attachments": [
+                {"File_Name": "report.zip", "File_Type": ".zip"},
+                {"File_Name": "FinancialStatement.xlsx", "File_Type": ".xlsx",
+                 "File_Path": "/path/to/file.xlsx"},
+            ]
+        }
+        att = idx_source.find_xlsx_attachment(result)
+        self.assertIsNotNone(att)
+        self.assertEqual(att["File_Name"], "FinancialStatement.xlsx")
+
+    def test_find_xlsx_attachment_none(self):
+        result = {
+            "Attachments": [
+                {"File_Name": "report.zip", "File_Type": ".zip"},
+            ]
+        }
+        self.assertIsNone(idx_source.find_xlsx_attachment(result))
+
+    def test_download_xlsx_missing_filename(self):
+        with self.assertRaises(idx_source.IdxSourceError):
+            idx_source.download_xlsx({"File_Path": "/some/path.xlsx"})
+
+    def test_download_xlsx_missing_path(self):
+        with self.assertRaises(idx_source.IdxSourceError):
+            idx_source.download_xlsx({"File_Name": "report.xlsx"})
+
+    def test_download_xlsx_success(self):
+        tmpdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmpdir)
+        attachment = {
+            "File_Name": "report.xlsx",
+            "File_Path": "/files/report.xlsx",
+        }
+        resp = self._fake_response(200, content=b"fake xlsx bytes")
+        with mock.patch.object(idx_source, "_get_session") as gs:
+            gs.return_value.get.return_value = resp
+            path = idx_source.download_xlsx(attachment, dest_dir=tmpdir, use_cache=False)
+        self.assertTrue(os.path.isfile(path))
+        with open(path, "rb") as fh:
+            self.assertEqual(fh.read(), b"fake xlsx bytes")
+
+    def test_download_xlsx_cached(self):
+        tmpdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmpdir)
+        attachment = {
+            "File_Name": "report.xlsx",
+            "File_Path": "/files/report.xlsx",
+        }
+        cached_path = os.path.join(tmpdir, "report.xlsx")
+        with open(cached_path, "wb") as fh:
+            fh.write(b"cached content")
+        with mock.patch.object(idx_source, "_get_session") as gs:
+            path = idx_source.download_xlsx(attachment, dest_dir=tmpdir, use_cache=True)
+        self.assertEqual(path, cached_path)
+        gs.return_value.get.assert_not_called()
+
+
+class TestIdxEdgeCases(unittest.TestCase):
+    """Edge-case tests for IDX parser helper functions."""
+
+    def test_is_debt_row_match(self):
+        self.assertTrue(
+            idx_source._is_debt_row("utang bank", idx_source.SHORT_TERM_DEBT_KEYWORDS))
+        self.assertTrue(
+            idx_source._is_debt_row("obligasi jangka panjang", idx_source.LONG_TERM_DEBT_KEYWORDS))
+
+    def test_is_debt_row_skip_non_debt(self):
+        self.assertFalse(
+            idx_source._is_debt_row("utang usaha", idx_source.SHORT_TERM_DEBT_KEYWORDS))
+        self.assertFalse(
+            idx_source._is_debt_row("utang pajak", idx_source.LONG_TERM_DEBT_KEYWORDS))
+
+    def test_is_debt_row_no_match(self):
+        self.assertFalse(
+            idx_source._is_debt_row("beban gaji", idx_source.SHORT_TERM_DEBT_KEYWORDS))
+        self.assertFalse(
+            idx_source._is_debt_row("pendapatan", idx_source.LONG_TERM_DEBT_KEYWORDS))
 
 
 if __name__ == "__main__":

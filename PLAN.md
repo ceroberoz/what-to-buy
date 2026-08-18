@@ -112,13 +112,13 @@ Each task ends with a git commit (message prefix `D<n>:`). Mark `[x]` as tasks f
 - [x] **D1 — deps + HTTP layer**: `uv add curl_cffi openpyxl`; `idx_source.py` with
       `fetch_report_index()` (GetFinancialReport, params verified) and `download_xlsx()`;
       XLSX cache dir; commit `D1`.
-- [ ] **D2 — XLSX parser**: pure `parse_workbook(path) -> dict` (rounding multiplier, income /
+- [x] **D2 — XLSX parser**: pure `parse_workbook(path) -> dict` (rounding multiplier, income /
       balance / cash-flow / PPE-depreciation extraction, EBIT computation, debt matching,
       capex/OCF sums) + `normalize()` to the flat schema (millions → full IDR);
       SIDO fixture committed; commit `D2`.
-- [ ] **D3 — dcf.py integration**: `fetch_financials_chain()` Yahoo → IDX → template; source
+- [x] **D3 — dcf.py integration**: `fetch_financials_chain()` Yahoo → IDX → template; source
       label in report; `--no-cache` respected; manual `--input` untouched; commit `D3`.
-- [ ] **D4 — tests + final gate**: parser unit tests on the fixture; mocked-HTTP tests;
+- [x] **D4 — tests + final gate**: parser unit tests on the fixture; mocked-HTTP tests;
       `python -m py_compile *.py`; `uv run python -m unittest`; live `uv run dcf.py SIDO`
       (IDX-sourced, no manual input); commit `D4`.
 
