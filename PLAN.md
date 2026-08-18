@@ -138,3 +138,81 @@ Each task ends with a git commit (message prefix `D<n>:`). Mark `[x]` as tasks f
 | Old endpoints tempting reuse | Documented dead (503); only `primary/ListedCompany/GetFinancialReport` used |
 | XLSX schema drift | Fixture-based tests catch layout changes; label-driven (not row-number-driven) matching |
 | AGENTS.md "zero deps" rule conflict | Explicitly documented relaxation for the two pinned deps |
+
+---
+
+## 6. Alternative Data Source Research (Post-Phase 4)
+
+**Context**: Some IDX tickers (e.g. MAPI) have empty XLSX data cells from IDX, and Yahoo
+returns only revenue + shares. We investigated whether a third automated source could fill
+the gap.
+
+### Sources Investigated
+
+| Source | Data Available | Access Method | Result |
+|--------|---------------|---------------|--------|
+| idnfinancials.com | Full financials (IS, BS, CF) | Web scraping | **PAYWALLED** — Rp 250K/month for full data; free tier = revenue + net profit only |
+| sectors.app/idx/{ticker} | Income statement flow (revenue, COGS, gross profit, operating income, selling, G&A) via Sankey JSON | HTML scraping | **PARTIAL** — no balance sheet, no cash flow, no depreciation/capex |
+| OJK Open Data | Banking/insurance sector reports | REST API | **NOT APPLICABLE** — individual stock financials not available |
+| Yahoo Finance (extended) | Revenue, shares for IDX tickers | API | **ALREADY IN CHAIN** — limited for IDX |
+| Investing.com | Full financials | Web scraping | **CLOUDFLARE BLOCKED** — requires browser automation |
+| Stockbit | Community-sourced data | Login required | **NOT AUTOMATABLE** without account |
+
+### Recommended Path
+
+**Accept current behavior**: The chain `Yahoo → IDX XLSX → manual template` works well for
+most tickers. For edge cases like MAPI (empty XLSX + sparse Yahoo), the manual template
+fallback is the correct behavior — there is no free, automated source with complete data.
+
+**No new code required**. The system already handles this gracefully:
+1. Yahoo fetches whatever it has (revenue, shares)
+2. IDX fetches the XLSX (which may have empty cells for some tickers)
+3. `data/MAPI.json` manual template exists as permanent fallback
+4. User fills template from company IR page (e.g. map.co.id PDF annual reports)
+
+**Future consideration**: If idnfinancials.com premium subscription is obtained, we could
+build a scraper (`requests` + `beautifulsoup4`) and add it as a 4th source in the chain:
+`Yahoo → IDX XLSX → idnfinancials → manual template`. This is documented but not
+implemented (paywall blocks free access).
+
+---
+
+## 7. XLSX Format Variants & Parser Fix (Post-Phase 4)
+
+### Root Cause Analysis
+
+Investigated why only 5/38 tickers produce full DCF results. Two distinct issues found:
+
+**Issue A — Different XBRL taxonomy prefixes**: IDX XLSX files use two numbering conventions:
+- `1xxxxxx` (e.g. `1321000`) — General Industry taxonomy (SIDO, ADRO, ASII, etc.)
+- `3xxxxxx` (e.g. `3321000`) — Infrastructure Industry taxonomy (TLKM, EXCL, ISAT, JSMR, etc.)
+
+The parser originally hardcoded `1321000`, `1210000`, `1510000`, `1611000` → crashed with
+"Worksheet 1321000 does not exist" on `3xxxxxx` tickers.
+
+**Issue B — Empty data cells (IDX data quality)**: Most XLSX files ship with labels only,
+no numeric data. This is an IDX data quality issue — the company hasn't populated the
+template, or the data is behind a different filing format.
+
+### Tested Results (38 tickers)
+
+| Category | Tickers | Count |
+|----------|---------|-------|
+| ✓ Full DCF (data present) | SIDO, ADRO, ASII, ELSA, INTP, FILM | 6 |
+| ✗ Empty data cells (`1xxxxxx`) | MAPI, GOTO, BUDI, TPIA, BRPT, CPIN, GGRM, HRUM, INDF, INKP, KLBF, MDKA, MIKA, PTBA, SMGR, UNVR, ARNA, EMTK, ESSA, LSIP, MNCN, PWON | 22 |
+| ✗ Empty data cells (`3xxxxxx`) | TLKM, EXCL, ISAT, JSMR, MTEL, PGAS, TBIG | 7 |
+| ✗ Financial sector (no IS sheet) | BBCA, BBRI, BMRI, NISP, BRIS, ARTO, BSDE, CTRA | 8 |
+
+### Fix Applied
+
+Added `_find_sheet(wb, suffix)` helper that dynamically finds sheets by suffix (e.g.
+`"321000"` matches both `1321000` and `3321000`). Parser now gracefully raises
+`IdxSourceError` for missing sheets instead of `KeyError`.
+
+**Result**: `3xxxxxx` tickers no longer crash — they correctly fall through to the empty-data
+guard and produce the expected "XLSX workbook has no usable numeric data" warning.
+
+### Remaining Limitation
+
+The empty-data-cell issue (Issue B) is an IDX data quality problem. No code fix possible —
+these tickers require manual templates or an alternative data source.

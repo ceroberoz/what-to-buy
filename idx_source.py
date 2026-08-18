@@ -229,6 +229,21 @@ def _sheet_label_map(ws, label_col=0, value_col=1):
     return out
 
 
+def _find_sheet(wb, suffix):
+    """Find a sheet ending with *suffix* in the workbook.
+
+    IDX XLSX files use two numbering conventions:
+    - ``1xxxxxx`` (e.g. ``1321000``) for General Industry taxonomy
+    - ``3xxxxxx`` (e.g. ``3321000``) for Infrastructure Industry taxonomy
+
+    Returns the worksheet object, or ``None`` if no matching sheet exists.
+    """
+    for name in wb.sheetnames:
+        if name.endswith(suffix):
+            return wb[name]
+    return None
+
+
 def _is_debt_row(label, keywords):
     """True when a liability label looks interest-bearing and is not a known non-debt line."""
     if any(skip in label for skip in NON_DEBT_LABELS):
@@ -302,7 +317,8 @@ def parse_workbook(path):
     wb = load_workbook(path, data_only=True)
     parsed = {"warnings": []}
 
-    info = _sheet_label_map(wb["1000000"])
+    info_ws = _find_sheet(wb, "000000") or wb["1000000"]
+    info = _sheet_label_map(info_ws)
     rounding_text = info.get("pembulatan yang digunakan dalam penyajian jumlah dalam laporan keuangan")
     text = str(rounding_text or "").lower()
     if "jutaan" in text or "million" in text:
@@ -314,7 +330,11 @@ def parse_workbook(path):
         parsed["warnings"].append("unknown rounding declaration: {}".format(rounding_text))
     parsed["fiscal_year"] = info.get("tanggal akhir periode berjalan")
 
-    income = _sheet_label_map(wb["1321000"])
+    income_ws = _find_sheet(wb, "321000")
+    if income_ws is None:
+        raise IdxSourceError(
+            "XLSX workbook has no income statement sheet (looked for *321000)")
+    income = _sheet_label_map(income_ws)
     parsed["revenue"] = income.get("penjualan dan pendapatan usaha")
     gross_profit = income.get("jumlah laba bruto")
     selling_expenses = income.get("beban penjualan")
@@ -333,21 +353,29 @@ def parse_workbook(path):
     else:
         parsed["ebit"] = None
 
-    balance = _sheet_label_map(wb["1210000"])
-    balance_prev = _sheet_label_map(wb["1210000"], value_col=2)
+    balance_ws = _find_sheet(wb, "210000")
+    if balance_ws is None:
+        raise IdxSourceError(
+            "XLSX workbook has no balance sheet (looked for *210000)")
+    balance = _sheet_label_map(balance_ws)
+    balance_prev = _sheet_label_map(balance_ws, value_col=2)
     parsed["cash"] = balance.get("kas dan setara kas")
     parsed["current_assets"] = balance.get("jumlah aset lancar")
     parsed["current_liabilities"] = balance.get("jumlah liabilitas jangka pendek")
     parsed["current_assets_prev"] = balance_prev.get("jumlah aset lancar")
     parsed["current_liabilities_prev"] = balance_prev.get("jumlah liabilitas jangka pendek")
     parsed["equity"] = balance.get("jumlah ekuitas")
-    short_debt, long_debt, short_hit, long_hit = _extract_debt(wb["1210000"])
+    short_debt, long_debt, short_hit, long_hit = _extract_debt(balance_ws)
     parsed["short_term_debt"] = short_debt
     parsed["long_term_debt"] = long_debt
     if not short_hit and not long_hit:
         parsed["warnings"].append("no interest-bearing debt rows matched; assuming 0")
 
-    cashflow = _sheet_label_map(wb["1510000"])
+    cashflow_ws = _find_sheet(wb, "510000")
+    if cashflow_ws is None:
+        raise IdxSourceError(
+            "XLSX workbook has no cash flow sheet (looked for *510000)")
+    cashflow = _sheet_label_map(cashflow_ws)
     parsed["operating_cashflow"] = cashflow.get("jumlah arus kas bersih yang diperoleh dari (digunakan untuk) aktivitas operasi")
     capex_parts = (
         cashflow.get("pembayaran untuk perolehan aset tetap"),
@@ -359,7 +387,8 @@ def parse_workbook(path):
     else:
         parsed["capex"] = None
 
-    depreciation = _extract_depreciation(wb["1611000"])
+    depreciation_ws = _find_sheet(wb, "611000")
+    depreciation = _extract_depreciation(depreciation_ws) if depreciation_ws else None
     parsed["depreciation"] = depreciation
     if depreciation is None:
         parsed["warnings"].append("depreciation movement not found")
