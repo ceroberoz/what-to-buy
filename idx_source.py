@@ -330,11 +330,22 @@ def parse_workbook(path):
         parsed["warnings"].append("unknown rounding declaration: {}".format(rounding_text))
     parsed["fiscal_year"] = info.get("tanggal akhir periode berjalan")
 
+    # Income statement: try *321000 (OCI before tax) first; when empty, fall
+    # back to *311000 (OCI net of tax).  Both use the same label set; only the
+    # OCI presentation differs.
     income_ws = _find_sheet(wb, "321000")
-    if income_ws is None:
-        raise IdxSourceError(
-            "XLSX workbook has no income statement sheet (looked for *321000)")
-    income = _sheet_label_map(income_ws)
+    income = _sheet_label_map(income_ws) if income_ws else {}
+    has_income_data = any(
+        isinstance(income.get(k), (int, float))
+        for k in ("penjualan dan pendapatan usaha", "jumlah laba bruto",
+                   "jumlah laba (rugi) sebelum pajak penghasilan")
+    )
+    if not has_income_data:
+        alt_ws = _find_sheet(wb, "311000")
+        if alt_ws:
+            income = _sheet_label_map(alt_ws)
+            parsed["warnings"].append(
+                "income statement from *311000 (OCI net of tax) instead of *321000")
     parsed["revenue"] = income.get("penjualan dan pendapatan usaha")
     gross_profit = income.get("jumlah laba bruto")
     selling_expenses = income.get("beban penjualan")

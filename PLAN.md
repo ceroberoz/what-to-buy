@@ -216,3 +216,46 @@ guard and produce the expected "XLSX workbook has no usable numeric data" warnin
 
 The empty-data-cell issue (Issue B) is an IDX data quality problem. No code fix possible —
 these tickers require manual templates or an alternative data source.
+
+---
+
+## 8. Income Statement Fallback: *311000 Sheet (Post-Phase 4)
+
+### Discovery
+
+Investigated why 31/44 tickers had BS+CF data but no IS data. Found that companies file
+their income statement in **two different sheets**:
+
+- `*321000` — OCI components presented **before tax** (what we originally checked)
+- `*311000` — OCI components presented **net of tax** (what most companies actually use)
+
+The labels are **identical** between the two sheets — same row names, same structure. Only
+the OCI presentation differs.
+
+### Fix Applied
+
+When `*321000` has no numeric data, fall back to `*311000`. The check is:
+```python
+has_income_data = any(
+    isinstance(income.get(k), (int, float))
+    for k in ("penjualan dan pendapatan usaha", "jumlah laba bruto",
+               "jumlah laba (rugi) sebelum pajak penghasilan")
+)
+if not has_income_data:
+    alt_ws = _find_sheet(wb, "311000")
+    if alt_ws:
+        income = _sheet_label_map(alt_ws)
+```
+
+### Results
+
+| Before | After |
+|--------|-------|
+| 5 tickers with full DCF | **31 tickers with full DCF** |
+| 31 tickers "empty data cells" | 13 tickers still fail (financial sector + 5 truly empty) |
+
+### Remaining Failures (13 tickers)
+
+- **Financial sector** (no IS/BS/CF sheets): BBCA, BBRI, BMRI, NISP, BRIS, ARTO — out of scope for DCF
+- **Truly empty**: ACST, EXCL, ISAT, MNCN, TLKM — XLSX has labels but no data in any sheet
+- **FILM**: Has revenue but missing EBIT (gross profit/selling/G&A breakdown missing)
